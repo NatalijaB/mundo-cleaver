@@ -11,7 +11,7 @@
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
-        "@gamerstake/game-core": "^0.1.0",
+        "@gamerstake/game-core": "^0.2.0",
         "socket.io": "^4.7.4"
     },
     "devDependencies": {

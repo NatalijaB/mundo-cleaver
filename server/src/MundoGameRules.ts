@@ -3,6 +3,7 @@
  * Implements the GameRules interface from @gamerstake/game-core
  */
 
+import { GameRules, Room, Command as CoreCommand } from '@gamerstake/game-core';
 import { Player } from './entities/Player.js';
 import { Knife } from './entities/Knife.js';
 import {
@@ -18,23 +19,9 @@ import {
 } from './types.js';
 
 /**
- * Room interface (simplified for standalone server)
- * This matches the game-core Room API
- */
-export interface MundoRoom {
-  id: string;
-  getRegistry(): Map<string, Player>;
-  getPlayers(): Map<string, Player>;
-  broadcast(event: { op: string; [key: string]: unknown }): void;
-  sendTo(playerId: string, event: { op: string; [key: string]: unknown }): void;
-  getTickCount(): number;
-  getConfig(): MundoRoomConfig;
-}
-
-/**
  * Mundo Cleaver Game Rules Implementation
  */
-export class MundoGameRules {
+export class MundoGameRules implements GameRules {
   private config: MundoRoomConfig;
   private gameMode: GameMode;
   
@@ -64,7 +51,7 @@ export class MundoGameRules {
   /**
    * Called once when room is created
    */
-  onRoomCreated(room: MundoRoom): void {
+  onRoomCreated(room: Room): void {
     console.log(`[MundoRules] Room ${room.id} created with mode: ${this.gameMode}`);
     this.knives.clear();
     this.winner = null;
@@ -74,7 +61,7 @@ export class MundoGameRules {
   /**
    * Called when a player joins the room
    */
-  onPlayerJoin(room: MundoRoom, player: Player): void {
+  onPlayerJoin(room: Room, player: Player): void {
     // Assign player to a team
     const team = this.assignTeam(player);
     
@@ -114,7 +101,7 @@ export class MundoGameRules {
   /**
    * Called when a player leaves the room
    */
-  onPlayerLeave(room: MundoRoom, playerId: string): void {
+  onPlayerLeave(room: Room, playerId: string): void {
     console.log(`[MundoRules] Player ${playerId} left`);
     
     // Remove from team tracking
@@ -134,9 +121,9 @@ export class MundoGameRules {
   }
 
   /**
-   * Called every tick (20 TPS = every 50ms)
+   * Called every tick (60 TPS = every 16.6ms)
    */
-  onTick(room: MundoRoom, delta: number): void {
+  onTick(room: Room, delta: number): void {
     if (!this.isRunning) {
       // Handle countdown
       if (this.countdownActive) {
@@ -153,7 +140,7 @@ export class MundoGameRules {
       return;
     }
 
-    const players = room.getPlayers();
+    const players = room.getRegistry();
     
     // Update player positions (runs at full 60 TPS)
     players.forEach(player => {
@@ -180,19 +167,22 @@ export class MundoGameRules {
   /**
    * Called when a player sends a command
    */
-  onCommand(room: MundoRoom, playerId: string, command: Command): void {
-    const player = room.getPlayers().get(playerId);
-    if (!player || player.isDead) return;
+  onCommand(room: Room, playerId: string, command: CoreCommand): void {
+    const entity = room.getRegistry().get(playerId);
+    if (!entity) return;
+    
+    const player = entity as Player;
+    if (player.isDead) return;
 
     switch (command.type) {
       case 'move':
-        this.handleMoveCommand(room, player, command as MoveCommand);
+        this.handleMoveCommand(room, player, command as unknown as MoveCommand);
         break;
       case 'stop':
         this.handleStopCommand(room, player);
         break;
       case 'knife_throw':
-        this.handleKnifeThrowCommand(room, player, command as KnifeThrowCommand);
+        this.handleKnifeThrowCommand(room, player, command as unknown as KnifeThrowCommand);
         break;
     }
   }
@@ -200,13 +190,13 @@ export class MundoGameRules {
   /**
    * Check if the room should end
    */
-  shouldEndRoom(room: MundoRoom): boolean {
+  shouldEndRoom(room: Room): boolean {
     return this.winner !== null;
   }
 
   // ==================== Command Handlers ====================
 
-  private handleMoveCommand(room: MundoRoom, player: Player, command: MoveCommand): void {
+  private handleMoveCommand(room: Room, player: Player, command: MoveCommand): void {
     // Clamp target to map bounds
     const targetX = Math.max(MAP_BOUNDS.minX, Math.min(MAP_BOUNDS.maxX, command.targetX));
     const targetZ = Math.max(MAP_BOUNDS.minZ, Math.min(MAP_BOUNDS.maxZ, command.targetZ));
@@ -238,7 +228,7 @@ export class MundoGameRules {
     });
   }
 
-  private handleStopCommand(room: MundoRoom, player: Player): void {
+  private handleStopCommand(room: Room, player: Player): void {
     player.stop();
     
     room.broadcast({
@@ -253,7 +243,7 @@ export class MundoGameRules {
     });
   }
 
-  private handleKnifeThrowCommand(room: MundoRoom, player: Player, command: KnifeThrowCommand): void {
+  private handleKnifeThrowCommand(room: Room, player: Player, command: KnifeThrowCommand): void {
     const now = Date.now();
     
     if (!player.canThrowKnife(now)) {
@@ -296,7 +286,7 @@ export class MundoGameRules {
 
   // ==================== Game Logic ====================
 
-  private updateKnives(room: MundoRoom, delta: number): void {
+  private updateKnives(room: Room, delta: number): void {
     const now = Date.now();
     const toRemove: string[] = [];
     
@@ -319,14 +309,14 @@ export class MundoGameRules {
     toRemove.forEach(id => this.knives.delete(id));
   }
 
-  private checkKnifeCollisions(room: MundoRoom): void {
-    const players = room.getPlayers();
+  private checkKnifeCollisions(room: Room): void {
+    const allPlayers = room.getRegistry().getAll() as Player[];
     const toRemove: string[] = [];
     
     this.knives.forEach((knife, id) => {
       if (knife.hasHit) return;
       
-      players.forEach(player => {
+      allPlayers.forEach(player => {
         // Can't hit own team
         if (player.team === knife.throwerTeam) return;
         if (player.isDead) return;
@@ -391,14 +381,14 @@ export class MundoGameRules {
     });
   }
 
-  private checkWinCondition(room: MundoRoom): void {
+  private checkWinCondition(room: Room): void {
     if (this.winner !== null) return;
     
-    const players = room.getPlayers();
+    const allPlayers = room.getRegistry().getAll() as Player[];
     let team1Alive = 0;
     let team2Alive = 0;
     
-    players.forEach(player => {
+    allPlayers.forEach(player => {
       if (!player.isDead) {
         if (player.team === 1) team1Alive++;
         else team2Alive++;
@@ -423,9 +413,9 @@ export class MundoGameRules {
     }
   }
 
-  private broadcastGameState(room: MundoRoom): void {
-    const players = room.getPlayers();
-    const playerStates = Array.from(players.values()).map(p => p.toJSON());
+  private broadcastGameState(room: Room): void {
+    const allPlayers = room.getRegistry().getAll() as Player[];
+    const playerStates = allPlayers.map(p => p.toJSON());
     const knifeStates = Array.from(this.knives.values()).map(k => k.toJSON());
     
     room.broadcast({
